@@ -1,20 +1,34 @@
-import streamlit as st
 import pandas as pd
 import requests
 import time
-from io import BytesIO
-from datetime import datetime
 
-st.set_page_config(page_title="Estimativa Azure", layout="centered")
+# Arquivos
+arquivo_entrada = "sua_planilha.xlsx"
+arquivo_saida = "planilha_com_detalhes_meterid.xlsx"
 
-st.title("📊 Estimativa de Custos Azure via MeterId")
-st.write("Faça o upload da planilha com os MeterIds e quantidades para obter uma estimativa de custo usando a Azure Retail API.")
+# Carrega a planilha
+df = pd.read_excel(arquivo_entrada)
 
-uploaded_file = st.file_uploader("📁 Envie um arquivo .xlsx com colunas 'MeterId' e 'Quantity'", type="xlsx")
+# Inicializa colunas para resultados
+precos_unitarios = []
+precos_finais = []
+sku_names = []
+service_names = []
+azure_regions = []
 
-# Função de busca na Azure API
-@st.cache_data(show_spinner=False)
-def buscar_detalhes_por_meter_id(meter_id, regioes):
+# Cache interno
+cache_precos = {}
+
+# Função para buscar dados do MeterId na API da Azure, priorizando regiões específicas e reservas
+def buscar_detalhes_por_meter_id(meter_id):
+    if meter_id in cache_precos:
+        return cache_precos[meter_id]
+
+    regioes = [
+        "brazilsouth", "eastus2", "Global", "Intercontinental",
+        "Zone 1", "Zone 3", "southamerica", "eastus", "westus", "westeurope", "southcentralus"
+    ]
+
     for regiao in regioes:
         url = f"https://prices.azure.com/api/retail/prices?$filter=meterId eq '{meter_id}' and armRegionName eq '{regiao}'"
         try:
@@ -22,85 +36,64 @@ def buscar_detalhes_por_meter_id(meter_id, regioes):
             if response.status_code == 200:
                 items = response.json().get("Items", [])
                 if items:
-                    item = items[0]
-                    return {
-                        "unitPrice": float(item.get("unitPrice", 0.0)),
-                        "skuName": item.get("skuName", ""),
-                        "serviceName": item.get("serviceName", ""),
-                        "armRegionName": item.get("armRegionName", "")
+                    # Tenta encontrar item com reserva (prioridade)
+                    item_reserva = next((item for item in items if item.get("type") == "Reservation"), None)
+                    item_final = item_reserva if item_reserva else items[0]
+
+                    resultado = {
+                        "unitPrice": float(item_final.get("unitPrice", 0.0)),
+                        "skuName": item_final.get("skuName", ""),
+                        "serviceName": item_final.get("serviceName", ""),
+                        "armRegionName": item_final.get("armRegionName", "")
                     }
-        except:
-            pass
+                    cache_precos[meter_id] = resultado
+                    return resultado
+        except Exception as e:
+            print(f"Erro ao buscar dados para meterId '{meter_id}' na região '{regiao}': {e}")
+
+    # Se nenhuma região retornar dados
+    cache_precos[meter_id] = None
     return None
 
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
+# Loop principal
+for i, row in df.iterrows():
+    meter_id = str(row.get("MeterId", "")).strip()
+    quantidade = row.get("Quantity", 0)
 
-    if "MeterId" not in df.columns or "Quantity" not in df.columns:
-        st.error("❌ A planilha deve conter as colunas 'MeterId' e 'Quantity'.")
-        st.stop()
+    dados = buscar_detalhes_por_meter_id(meter_id)
 
-    regioes_preferidas = ["brazilsouth", "eastus2", "Global", "Intercontinental", "Zone 1", "Zone 3"]
+    if dados:
+        preco_unitario = dados["unitPrice"]
+        sku_name = dados["skuName"]
 
-    # Colunas para preencher
-    precos_unitarios = []
-    precos_finais = []
-    sku_names = []
-    service_names = []
-    azure_regions = []
+        # Ajuste para unidade "100 TB" → converte preço para por GB
+        if "100 TB" in sku_name:
+            preco_unitario = preco_unitario / 102400
 
-    total = len(df)
+        preco_total = preco_unitario * quantidade
 
-    progresso = st.progress(0, text="Iniciando...")
+        precos_unitarios.append(round(preco_unitario, 6))
+        precos_finais.append(round(preco_total, 4))
+        sku_names.append(sku_name)
+        service_names.append(dados["serviceName"])
+        azure_regions.append(dados["armRegionName"])
+    else:
+        precos_unitarios.append(None)
+        precos_finais.append(None)
+        sku_names.append(None)
+        service_names.append(None)
+        azure_regions.append(None)
 
-    for i, row in df.iterrows():
-        meter_id = str(row["MeterId"]).strip()
-        quantidade = float(row["Quantity"])
+    print(f"[{i+1}/{len(df)}] MeterId: {meter_id} → Custo: {preco_total if dados else 'N/A'}")
+    time.sleep(0.3)
 
-        dados = buscar_detalhes_por_meter_id(meter_id, regioes_preferidas)
+# Adiciona colunas na planilha
+df["Custo_Unitario_USD"] = precos_unitarios
+df["Preco_Final_USD"] = precos_finais
+df["SKU_Name"] = sku_names
+df["Service_Name"] = service_names
+df["Azure_Region"] = azure_regions
 
-        if dados:
-            preco_unitario = dados["unitPrice"]
-            sku_name = dados["skuName"]
-
-            # Ajuste para SKU baseado em 100 TB
-            if "100 TB" in sku_name:
-                preco_unitario /= 102400
-
-            preco_final = preco_unitario * quantidade
-
-            precos_unitarios.append(round(preco_unitario, 6))
-            precos_finais.append(round(preco_final, 4))
-            sku_names.append(sku_name)
-            service_names.append(dados["serviceName"])
-            azure_regions.append(dados["armRegionName"])
-        else:
-            precos_unitarios.append(None)
-            precos_finais.append(None)
-            sku_names.append(None)
-            service_names.append(None)
-            azure_regions.append(None)
-
-        progresso.progress((i + 1) / total, text=f"Processando linha {i+1} de {total} ({int((i+1)/total*100)}%)")
-        time.sleep(0.1)  # Pequeno delay para evitar throttling
-
-    df["Custo_Unitario_USD"] = precos_unitarios
-    df["Preco_Final_USD"] = precos_finais
-    df["SKU_Name"] = sku_names
-    df["Service_Name"] = service_names
-    df["Azure_Region"] = azure_regions
-
-    # Gera arquivo de saída
-    buffer = BytesIO()
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    nome_arquivo = f"Estimativa_Azure_{timestamp}.xlsx"
-    df.to_excel(buffer, index=False, engine="openpyxl")
-    buffer.seek(0)
-
-    st.success("✅ Processamento concluído!")
-    st.download_button(
-        label="📥 Baixar planilha com estimativas",
-        data=buffer,
-        file_name=nome_arquivo,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# Salva o resultado
+df.to_excel(arquivo_saida, index=False)
+print(f"\n✅ Planilha salva como '{arquivo_saida}' com os dados da Azure Retail API.")
