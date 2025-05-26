@@ -19,14 +19,18 @@ azure_regions = []
 # Cache interno
 cache_precos = {}
 
-# Função para buscar dados do MeterId na API da Azure, priorizando regiões específicas e reservas
+# Função para buscar dados do MeterId na API da Azure, priorizando regiões específicas
 def buscar_detalhes_por_meter_id(meter_id):
     if meter_id in cache_precos:
         return cache_precos[meter_id]
 
     regioes = [
-        "brazilsouth", "eastus2", "Global", "Intercontinental",
-        "Zone 1", "Zone 3", "southamerica", "eastus", "westus", "westeurope", "southcentralus"
+        "brazilsouth",
+        "eastus2",
+        "Global",
+        "Intercontinental",
+        "Zone 1",
+        "Zone 3"
     ]
 
     for regiao in regioes:
@@ -36,15 +40,12 @@ def buscar_detalhes_por_meter_id(meter_id):
             if response.status_code == 200:
                 items = response.json().get("Items", [])
                 if items:
-                    # Tenta encontrar item com reserva (prioridade)
-                    item_reserva = next((item for item in items if item.get("type") == "Reservation"), None)
-                    item_final = item_reserva if item_reserva else items[0]
-
+                    item = items[0]
                     resultado = {
-                        "unitPrice": float(item_final.get("unitPrice", 0.0)),
-                        "skuName": item_final.get("skuName", ""),
-                        "serviceName": item_final.get("serviceName", ""),
-                        "armRegionName": item_final.get("armRegionName", "")
+                        "unitPrice": float(item.get("unitPrice", 0.0)),
+                        "skuName": item.get("skuName", ""),
+                        "serviceName": item.get("serviceName", ""),
+                        "armRegionName": item.get("armRegionName", "")
                     }
                     cache_precos[meter_id] = resultado
                     return resultado
@@ -66,7 +67,7 @@ for i, row in df.iterrows():
         preco_unitario = dados["unitPrice"]
         sku_name = dados["skuName"]
 
-        # Ajuste para unidade "100 TB" → converte preço para por GB
+        # Ajuste: se SKU contém "100 TB", dividir o preço por 102400
         if "100 TB" in sku_name:
             preco_unitario = preco_unitario / 102400
 
